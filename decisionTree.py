@@ -1,94 +1,102 @@
 import numpy as np
-# 1. 情報エントロピーの計算
-def calculate_entropy(y):
-    if len(y) == 0:
-        return 0
-    counts = np.bincount(y)
-    probabilities = counts / len(y)
-    return -np.sum([p * np.log2(p) for p in probabilities if p > 0])
 
-# 2. 決定木アルゴリズム
+def calculate_entropy(y):
+    """情報エントロピーの計算（ベクトル演算で高速化）"""
+    if len(y) == 0: return 0
+    probabilities = np.bincount(y) / len(y)
+    # 0の時にlog計算を避けるため、正の値のみ抽出
+    p = probabilities[probabilities > 0]
+    return -np.sum(p * np.log2(p))
+
+def calculate_gini(y):
+    """ジニ不純度の計算（エントロピーより計算が軽く、実用性が高い）"""
+    if len(y) == 0: return 0
+    probabilities = np.bincount(y) / len(y)
+    return 1 - np.sum(probabilities**2)
+
 class DecisionTree:
-    def __init__(self, max_depth=3):
+    def __init__(self, max_depth=3, criterion='entropy', feature_names=None):
         self.max_depth = max_depth
+        self.criterion = criterion
+        self.feature_names = feature_names
         self.tree = None
+        
+        # 指標の切り替え
+        self.metric = calculate_entropy if criterion == 'entropy' else calculate_gini
 
     def fit(self, X, y):
-        """学習（行列Xとラベルyを使用して木を構築）"""
+        # 特徴量名が未指定の場合は「特徴量0, 1...」とする
+        if self.feature_names is None:
+            self.feature_names = [f"特徴量{i}" for i in range(X.shape[1])]
         self.tree = self._build_tree(X, y, depth=0)
 
     def _build_tree(self, X, y, depth):
-        """【再帰】学習プロセス（ログ出力付き）"""
-        # --- 思考ログの追加 ---
-        indent = "  " * depth  # 深さに応じて字下げ
-        print(f"{indent}[深さ {depth}] 学習開始 - サンプル数: {len(y)}")
-        
         num_samples, num_features = X.shape
         
-        # 停止条件のチェック
+        # --- 停止条件 ---
+        # 1. 全て同じラベル
         if len(np.unique(y)) == 1:
-            label = "毒" if y[0] == 1 else "食用"
-            print(f"{indent}  => 全て同じ種類 ({label}) のため、この枝は終了")
-            return np.bincount(y).argmax()
-            
-        if depth >= self.max_depth:
-            print(f"{indent}  => 最大深度に達したため、多数決で終了")
+            return y[0]
+        # 2. 最大深度に達した、またはサンプルが少なすぎる
+        if depth >= self.max_depth or num_samples < 2:
             return np.bincount(y).argmax()
 
+        # --- 最良の分割を探す ---
         best_gain = -1
         best_split = None
-        current_entropy = calculate_entropy(y)
+        current_impurity = self.metric(y)
 
-        for feature_idx in range(num_features):
-            values = np.unique(X[:, feature_idx])
-            for threshold in values:
-                left_indices = np.where(X[:, feature_idx] <= threshold)[0]
-                right_indices = np.where(X[:, feature_idx] > threshold)[0]
-
-                if len(left_indices) == 0 or len(right_indices) == 0:
+        for idx in range(num_features):
+            thresholds = np.unique(X[:, idx])
+            for thr in thresholds:
+                # データを分割
+                left_mask = X[:, idx] <= thr
+                right_mask = ~left_mask # 反転ビット演算で高速化
+                
+                if not np.any(left_mask) or not np.any(right_mask):
                     continue
 
-                e_left = calculate_entropy(y[left_indices])
-                e_right = calculate_entropy(y[right_indices])
-                n_l, n_r = len(left_indices), len(right_indices)
-                child_entropy = (n_l / num_samples) * e_left + (n_r / num_samples) * e_right
-                gain = current_entropy - child_entropy
+                # 重み付き不純度の計算
+                n_l, n_r = np.sum(left_mask), np.sum(right_mask)
+                w_l, w_r = n_l / num_samples, n_r / num_samples
+                child_impurity = w_l * self.metric(y[left_mask]) + w_r * self.metric(y[right_mask])
+                
+                gain = current_impurity - child_impurity
 
                 if gain > best_gain:
                     best_gain = gain
-                    best_split = (feature_idx, threshold, left_indices, right_indices)
+                    best_split = (idx, thr, left_mask, right_mask)
 
+        # --- 分割の実行 ---
         if best_gain > 0:
-            idx, thr, left_idx, right_idx = best_split
-            feat_name = "カサ" if idx == 0 else "匂い"
-            print(f"{indent}  [決定] 特徴量 '{feat_name}' で分割 (情報利得: {best_gain:.4f})")
+            idx, thr, left_m, right_m = best_split
             
-            # 再帰呼び出し（子ノードへ）
-            left_subtree = self._build_tree(X[left_idx], y[left_idx], depth + 1)
-            right_subtree = self._build_tree(X[right_idx], y[right_idx], depth + 1)
+            # 再帰的に子ノードを構築
+            left_subtree = self._build_tree(X[left_m], y[left_m], depth + 1)
+            right_subtree = self._build_tree(X[right_m], y[right_m], depth + 1)
             
-            return {"feature": idx, "threshold": thr, "left": left_subtree, "right": right_subtree}
+            return {
+                "feature_idx": idx,
+                "feature_name": self.feature_names[idx],
+                "threshold": thr,
+                "left": left_subtree,
+                "right": right_subtree,
+                "gain": best_gain
+            }
         
         return np.bincount(y).argmax()
 
-    def predict(self, x):
-        """予測の入り口"""
-        return self._predict_recursive(x, self.tree)
+    def predict(self, X):
+        """複数サンプル（行列）の一括予測にも対応"""
+        if X.ndim == 1:
+            return self._traverse(X, self.tree)
+        return np.array([self._traverse(x, self.tree) for x in X])
 
-    def _predict_recursive(self, x, node, depth=0):
-        indent = "  " * depth
+    def _traverse(self, x, node):
         if not isinstance(node, dict):
-            label = "毒" if node == 1 else "食用"
-            print(f"{indent}結論: このキノコは【{label}】です")
             return node
         
-        feat_name = "カサ" if node['feature'] == 0 else "匂い"
-        val = "あり(1)" if x[node['feature']] == 1 else "なし(0)"
-        print(f"{indent}質問: {feat_name} は {val} ですか？")
-        
-        if x[node['feature']] <= node['threshold']:
-            print(f"{indent}  -> [左の枝へ]")
-            return self._predict_recursive(x, node['left'], depth + 1)
+        if x[node['feature_idx']] <= node['threshold']:
+            return self._traverse(x, node['left'])
         else:
-            print(f"{indent}  -> [右の枝へ]")
-            return self._predict_recursive(x, node['right'], depth + 1)
+            return self._traverse(x, node['right'])

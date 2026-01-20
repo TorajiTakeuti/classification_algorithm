@@ -2,14 +2,6 @@ import numpy as np
 import sys
 from decisionTree import DecisionTree
 
-# 1. 情報エントロピーの計算
-def calculate_entropy(y):
-    if len(y) == 0:
-        return 0
-    counts = np.bincount(y)
-    probabilities = counts / len(y)
-    return -np.sum([p * np.log2(p) for p in probabilities if p > 0])
-
 def ask_question(prompt):
     """質問をして 1(yes) か 0(no) を返す。それ以外は終了。"""
     response_map = {
@@ -32,15 +24,15 @@ X_train = np.array([
 y_train = np.array([0, 1, 0, 1, 1, 1])  # 0:食用, 1:毒
 
 # 学習
-model = DecisionTree(max_depth=2)
+model = DecisionTree(max_depth=3)
 model.fit(X_train, y_train)
 
 print("--- 学習完了 ---")
 print("構築された決定木（辞書構造）:", model.tree)
 
 # 予測のテスト
-val1 = ask_question("カサは滑らかですか？(yes or no)")
-val2 = ask_question("匂いはありますか？(yes or no)")
+val1 = ask_question("カサは滑らかですか？")
+val2 = ask_question("匂いはありますか？")
 test_mushroom = np.array([val1, val2])
 
 result = model.predict(test_mushroom)
